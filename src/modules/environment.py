@@ -15,7 +15,7 @@ class WellPlanningEnv:
             'max_inclination': 90.0
         }
         
-        self.state_dim = 24
+        self.state_dim = 26
         self.action_dim = 5
         
         self.reset()
@@ -37,7 +37,8 @@ class WellPlanningEnv:
         
         self.done = False
         self.steps = 0
-        self.max_steps = 1000
+        self.max_steps = 1500
+        self.max_inclination_reached = 0
         
         return self._get_state()
     
@@ -76,6 +77,8 @@ class WellPlanningEnv:
             I_to_target / 90,
             A_to_target / 360,
             (target_TVD - self.current_TVD) / 20000,
+            delta_N / 10000,
+            delta_E / 10000,
             torque / 50000,
             drag / 100000,
             0.5,
@@ -93,8 +96,8 @@ class WellPlanningEnv:
         return state
     
     def step(self, action):
-        dI = np.clip(action[0] * 5, -4, 4)
-        dA = np.clip(action[1] * 10, -10, 10)
+        dI = np.clip(action[0] * 2, -2, 2)
+        dA = np.clip(action[1] * 2, -2, 2)
         
         new_I = np.clip(self.current_I + dI, 0, self.constraints['max_inclination'])
         new_A = (self.current_A + dA) % 360
@@ -142,18 +145,27 @@ class WellPlanningEnv:
                                  (target_TVD - self.current_TVD)**2)
         
         self.steps += 1
+        self.max_inclination_reached = max(self.max_inclination_reached, self.current_I)
         
-        if dist_to_target < 150:
+        MD_TVD_ratio = self.current_MD / (self.current_TVD + 1e-6)
+        
+        horiz_dist = np.sqrt((target_N - self.current_N)**2 + (target_E - self.current_E)**2)
+        vert_dist = abs(target_TVD - self.current_TVD)
+        
+        if horiz_dist < 150 and vert_dist < 150:
             self.done = True
-            reward += 100
+            reward += 20000
         elif self.current_TVD > target_TVD + 1000:
             self.done = True
-            reward -= 50
+            reward -= 5000
         elif self.steps >= self.max_steps:
             self.done = True
-            reward -= 20
+            reward -= 5000 + (dist_to_target * 5)
         elif DLS > self.constraints['DLS_max']:
-            reward -= 10
+            reward -= 100
+        elif MD_TVD_ratio > 2.5:
+            self.done = True
+            reward -= 3000
         
         next_state = self._get_state()
         
@@ -164,40 +176,62 @@ class WellPlanningEnv:
         target_E = self.target.get('E', 4000)
         target_TVD = self.target.get('TVD', 15000)
         
-        dist_to_target = np.sqrt((target_N - self.current_N)**2 + 
-                                 (target_E - self.current_E)**2 + 
-                                 (target_TVD - self.current_TVD)**2)
+        R_smoothness = 10 if DLS <= 3 else -50 * (DLS - 3)**2
         
-        max_distance = 20000
-        R_target = -dist_to_target / max_distance
+        R_azimuth_stability = 0
+        if len(self.trajectory) > 1:
+            dA = abs(self.trajectory[-1]['azimuth'] - self.trajectory[-2]['azimuth'])
+            if dA > 180:
+                dA = 360 - dA
+            if dA <= 3:
+                R_azimuth_stability = 5
+            elif dA <= 8:
+                R_azimuth_stability = -10 * (dA - 3)
+            else:
+                R_azimuth_stability = -50 - 20 * (dA - 8)
         
-        horizontal_dist = np.sqrt((target_N - self.current_N)**2 + (target_E - self.current_E)**2)
-        vertical_dist = abs(target_TVD - self.current_TVD)
+        HD_target = np.sqrt(target_N**2 + target_E**2)
+        required_I = np.degrees(np.arctan2(HD_target, target_TVD - 3000))
+        progress_depth = (self.current_TVD - 3000) / (target_TVD - 3000) if target_TVD > 3000 else 0
         
-        if horizontal_dist < 200 and vertical_dist < 200:
-            R_target += 5.0
-        
-        target_horizontal_dist = np.sqrt(target_N**2 + target_E**2)
-        if target_horizontal_dist > 1000 and self.current_I < 30 and self.current_TVD < target_TVD * 0.5:
-            R_target -= 1.0
-        
-        MD_ratio = self.current_MD / (self.current_TVD + 1e-6)
-        R_efficiency = -0.1 * (MD_ratio - 1.0)
+        R_inclination_profile = 0
+        if progress_depth < 0.3:
+            if self.current_I < required_I * 0.5:
+                R_inclination_profile = -30
+            elif self.current_I < required_I:
+                R_inclination_profile = 20
+        elif progress_depth < 0.7:
+            if abs(self.current_I - required_I) < 10:
+                R_inclination_profile = 30
+            else:
+                R_inclination_profile = -20
+        else:
+            if self.current_I < required_I * 0.7:
+                R_inclination_profile = -40
         
         props = self.reservoir.get_properties(self.current_N, self.current_E, self.current_TVD)
         stable, _ = self.physics.wellbore_stability(
-            self.current_TVD, 12.5, 
-            props['pore_pressure_grad'], 
+            self.current_TVD, 12.5,
+            props['pore_pressure_grad'],
             props['frac_gradient']
         )
-        R_safety = 0 if stable else -5
+        R_stability = 15 if stable else -100
         
-        if DLS > self.constraints['DLS_max']:
-            R_safety -= 20 * (DLS - self.constraints['DLS_max'])
+        R_reservoir = 3 * np.sqrt(props['porosity'] * props['permeability'] / 100)
         
-        R_production = 0.5 * np.sqrt(props['porosity'] * props['permeability'] / 100)
+        delta_N = target_N - self.current_N
+        delta_E = target_E - self.current_E
+        if abs(delta_N) > 50 or abs(delta_E) > 50:
+            required_azimuth = np.degrees(np.arctan2(delta_E, delta_N)) % 360
+            azimuth_error = abs(self.current_A - required_azimuth)
+            if azimuth_error > 180:
+                azimuth_error = 360 - azimuth_error
+            R_direction = -azimuth_error / 50
+        else:
+            R_direction = 0
         
-        R_total = 10.0 * R_target + 0.5 * R_efficiency + 1.0 * R_safety + 0.5 * R_production
+        R_total = (R_smoothness + R_azimuth_stability + R_inclination_profile + 
+                   R_stability + R_reservoir + R_direction)
         
         return R_total
     

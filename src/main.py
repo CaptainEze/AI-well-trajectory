@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import os
+import sys
 from modules.physics import TrajectoryPhysics
 from modules.reservoir import ReservoirModel, SyntheticDataGenerator
 from modules.ppo_agent import PPOAgent, ExperienceBuffer
@@ -58,7 +59,7 @@ class WellOptimizationSystem:
         print("Environment initialized successfully")
         
         print("\nInitializing PPO agent...")
-        agent = PPOAgent(state_dim=24, action_dim=5)
+        agent = PPOAgent(state_dim=26, action_dim=5)
         print(f"Actor network parameters: {sum(p.numel() for p in agent.actor.parameters())}")
         print(f"Critic network parameters: {sum(p.numel() for p in agent.critic.parameters())}")
         
@@ -87,7 +88,7 @@ class WellOptimizationSystem:
         results_obj1 = pd.DataFrame({
             'Component': ['State Dimension', 'Action Dimension', 'Actor Parameters', 
                          'Critic Parameters', 'Reservoir Grid Size', 'Survey Interval'],
-            'Value': [24, 5, sum(p.numel() for p in agent.actor.parameters()),
+            'Value': [26, 5, sum(p.numel() for p in agent.actor.parameters()),
                      sum(p.numel() for p in agent.critic.parameters()),
                      '100x100x30', 30]
         })
@@ -96,68 +97,76 @@ class WellOptimizationSystem:
         print("\nObjective 1 completed successfully")
         return env, agent, reservoir, target, conventional_trajectory
     
-    def objective_2_implement_ai_algorithms(self, env, agent, reservoir, target):
+    def objective_2_implement_ai_algorithms(self, env, agent, reservoir, target, skip_training=False):
         print("\n" + "="*70)
         print("OBJECTIVE 2: Implement AI-Driven Optimization Algorithms")
         print("="*70)
         
-        print("\nTraining PPO agent...")
-        n_episodes = 300
-        steps_per_episode = 600
+        model_path = f'{self.models_dir}/best_ppo_agent.pth'
+        steps_per_episode = 500
         
-        episode_rewards = []
-        best_reward = -float('inf')
-        
-        for episode in range(n_episodes):
-            state = env.reset()
-            episode_reward = 0
-            buffer = ExperienceBuffer()
+        if skip_training and os.path.exists(model_path):
+            print("\nLoading pre-trained model...")
+            agent.load(model_path)
+            print(f"Model loaded from {model_path}")
+            episode_rewards = []
+        else:
+            print("\nTraining PPO agent...")
+            n_episodes = 200
             
-            for step in range(steps_per_episode):
-                action, log_prob, value = agent.select_action(state)
-                next_state, reward, done, _ = env.step(action)
-                
-                buffer.store(state, action, reward, value, log_prob)
-                episode_reward += reward
-                state = next_state
-                
-                if done:
-                    break
+            episode_rewards = []
+            best_reward = -float('inf')
             
-            episode_rewards.append(episode_reward)
+            for episode in range(n_episodes):
+                state = env.reset()
+                episode_reward = 0
+                buffer = ExperienceBuffer()
+                
+                for step in range(steps_per_episode):
+                    action, log_prob, value = agent.select_action(state)
+                    next_state, reward, done, _ = env.step(action)
+                    
+                    buffer.store(state, action, reward, value, log_prob)
+                    episode_reward += reward
+                    state = next_state
+                    
+                    if done:
+                        break
+                
+                episode_rewards.append(episode_reward)
+                
+                if buffer.size > 0:
+                    states, actions, rewards, values, log_probs = buffer.get()
+                    
+                    next_value = agent.critic(
+                        agent.critic.network[0].weight.new_tensor(state).unsqueeze(0)
+                    ).item()
+                    
+                    dones = np.zeros(len(rewards))
+                    dones[-1] = 1 if done else 0
+                    
+                    advantages, returns = agent.compute_gae(rewards, values, next_value, dones)
+                    
+                    policy_loss, value_loss = agent.update(
+                        states, actions, log_probs, advantages, returns,
+                        train_policy_iters=40, train_value_iters=40, minibatch_size=32
+                    )
+                
+                if episode_reward > best_reward:
+                    best_reward = episode_reward
+                    agent.save(f'{self.models_dir}/best_ppo_agent.pth')
+                
+                if (episode + 1) % 30 == 0:
+                    avg_reward = np.mean(episode_rewards[-30:])
+                    print(f"Episode {episode+1}/{n_episodes} | Avg Reward: {avg_reward:.2f} | Best: {best_reward:.2f}")
             
-            if buffer.size > 0:
-                states, actions, rewards, values, log_probs = buffer.get()
-                
-                next_value = agent.critic(
-                    agent.critic.network[0].weight.new_tensor(state).unsqueeze(0)
-                ).item()
-                
-                dones = np.zeros(len(rewards))
-                dones[-1] = 1 if done else 0
-                
-                advantages, returns = agent.compute_gae(rewards, values, next_value, dones)
-                
-                policy_loss, value_loss = agent.update(
-                    states, actions, log_probs, advantages, returns,
-                    train_policy_iters=40, train_value_iters=40, minibatch_size=32
-                )
+            print("\nTraining completed")
+            print(f"Best episode reward: {best_reward:.2f}")
             
-            if episode_reward > best_reward:
-                best_reward = episode_reward
-                agent.save(f'{self.models_dir}/best_ppo_agent.pth')
-            
-            if (episode + 1) % 30 == 0:
-                avg_reward = np.mean(episode_rewards[-30:])
-                print(f"Episode {episode+1}/{n_episodes} | Avg Reward: {avg_reward:.2f} | Best: {best_reward:.2f}")
-        
-        print("\nTraining completed")
-        print(f"Best episode reward: {best_reward:.2f}")
-        
-        self.visualizer.plot_training_progress(
-            episode_rewards,
-            filename='04_training_rewards.png'
-        )
+            self.visualizer.plot_training_progress(
+                episode_rewards,
+                filename='04_training_rewards.png'
+            )
         
         print("\nGenerating optimized trajectory using trained agent...")
         state = env.reset()
@@ -190,12 +199,18 @@ class WellOptimizationSystem:
             optimized_trajectory,
             filename='05_reservoir_properties.png'
         )
+        self.visualizer.plot_3d_reservoir_with_trajectory(
+            reservoir,
+            optimized_trajectory,
+            filename='10_3d_reservoir_trajectory.png'
+        )
         
-        training_df = pd.DataFrame({
-            'Episode': range(1, n_episodes + 1),
-            'Reward': episode_rewards
-        })
-        training_df.to_csv(f'{self.results_dir}/objective2_training_history.csv', index=False)
+        if episode_rewards:
+            training_df = pd.DataFrame({
+                'Episode': range(1, len(episode_rewards) + 1),
+                'Reward': episode_rewards
+            })
+            training_df.to_csv(f'{self.results_dir}/objective2_training_history.csv', index=False)
         
         trajectory_df = pd.DataFrame(optimized_trajectory)
         trajectory_df.to_csv(f'{self.results_dir}/objective2_optimized_trajectory.csv', index=False)
@@ -203,7 +218,7 @@ class WellOptimizationSystem:
         print("\nObjective 2 completed successfully")
         return optimized_trajectory, episode_rewards
     
-    def objective_3_validate_and_compare(self, optimized_trajectory, conventional_trajectory, reservoir):
+    def objective_3_validate_and_compare(self, optimized_trajectory, conventional_trajectory, reservoir, target):
         print("\n" + "="*70)
         print("OBJECTIVE 3: Validate Model and Compare with Conventional Methods")
         print("="*70)
@@ -261,6 +276,7 @@ class WellOptimizationSystem:
         self.visualizer.plot_comparison(
             optimized_trajectory,
             conventional_trajectory,
+            target,
             filename='07_trajectory_comparison.png'
         )
         
@@ -293,9 +309,17 @@ class WellOptimizationSystem:
 
 
 def main():
+    skip_training = '--skip-training' in sys.argv or '--load-model' in sys.argv
+    
     print("\n" + "="*70)
     print("AI-BASED GAS WELL PLACEMENT AND TRAJECTORY OPTIMIZATION")
     print("="*70)
+    
+    if skip_training:
+        print("\nMode: Using pre-trained model (training skipped)")
+    else:
+        print("\nMode: Training new model")
+    
     print("\nInitializing optimization system...")
     
     system = WellOptimizationSystem()
@@ -303,11 +327,11 @@ def main():
     env, agent, reservoir, target, conventional_trajectory = system.objective_1_develop_mathematical_model()
     
     optimized_trajectory, training_history = system.objective_2_implement_ai_algorithms(
-        env, agent, reservoir, target
+        env, agent, reservoir, target, skip_training=skip_training
     )
     
     comparison_results = system.objective_3_validate_and_compare(
-        optimized_trajectory, conventional_trajectory, reservoir
+        optimized_trajectory, conventional_trajectory, reservoir, target
     )
     
     print("\n" + "="*70)

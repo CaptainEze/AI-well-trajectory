@@ -152,7 +152,88 @@ class Visualizer:
         plt.savefig(f'{self.output_dir}/{filename}', dpi=300, bbox_inches='tight')
         plt.close()
     
-    def plot_comparison(self, ai_trajectory, conventional_trajectory, 
+    def plot_3d_reservoir_with_trajectory(self, reservoir, trajectory, filename='10_3d_reservoir_trajectory.png'):
+        fig = plt.figure(figsize=(16, 12))
+        
+        ax1 = fig.add_subplot(221, projection='3d')
+        
+        nx, ny, nz = reservoir.grid_size
+        x_slice = nx // 2
+        y_slice = ny // 2
+        
+        z_coords = np.arange(nz) * 10
+        y_coords = np.arange(ny) * 50
+        x_coords = np.arange(nx) * 50
+        
+        Y, Z = np.meshgrid(y_coords, z_coords)
+        porosity_slice_xz = reservoir.porosity_field[x_slice, :, :].T
+        
+        ax1.plot_surface(np.full_like(Y, x_slice * 50), Y, Z, 
+                        facecolors=plt.cm.viridis(porosity_slice_xz / 0.35),
+                        alpha=0.6, shade=False)
+        
+        if trajectory and len(trajectory) > 0:
+            N = [p['N'] for p in trajectory]
+            E = [p['E'] for p in trajectory]
+            TVD = [p['TVD'] for p in trajectory]
+            ax1.plot(N, E, TVD, 'r-', linewidth=3, label='Well Path')
+        
+        ax1.set_xlabel('North (ft)', fontsize=10)
+        ax1.set_ylabel('East (ft)', fontsize=10)
+        ax1.set_zlabel('TVD (ft)', fontsize=10)
+        ax1.set_title('3D Reservoir Porosity with Well Trajectory', fontsize=11, fontweight='bold')
+        ax1.legend()
+        
+        ax2 = fig.add_subplot(222, projection='3d')
+        perm_slice_xz = np.log10(reservoir.permeability_field[x_slice, :, :].T + 1)
+        
+        ax2.plot_surface(np.full_like(Y, x_slice * 50), Y, Z,
+                        facecolors=plt.cm.plasma(perm_slice_xz / 3),
+                        alpha=0.6, shade=False)
+        
+        if trajectory and len(trajectory) > 0:
+            ax2.plot(N, E, TVD, 'r-', linewidth=3, label='Well Path')
+        
+        ax2.set_xlabel('North (ft)', fontsize=10)
+        ax2.set_ylabel('East (ft)', fontsize=10)
+        ax2.set_zlabel('TVD (ft)', fontsize=10)
+        ax2.set_title('3D Reservoir Permeability with Well Trajectory', fontsize=11, fontweight='bold')
+        ax2.legend()
+        
+        ax3 = fig.add_subplot(223)
+        if trajectory and len(trajectory) > 0:
+            porosity_along_path = []
+            perm_along_path = []
+            md_along_path = []
+            
+            for point in trajectory:
+                props = reservoir.get_properties(point['N'], point['E'], point['TVD'])
+                porosity_along_path.append(props['porosity'])
+                perm_along_path.append(props['permeability'])
+                md_along_path.append(point['MD'])
+            
+            ax3.plot(md_along_path, porosity_along_path, 'b-', linewidth=2, label='Porosity')
+            ax3.set_xlabel('Measured Depth (ft)', fontsize=10)
+            ax3.set_ylabel('Porosity (fraction)', fontsize=10)
+            ax3.set_title('Porosity Along Well Path', fontsize=11, fontweight='bold')
+            ax3.grid(True, alpha=0.3)
+            ax3.legend()
+        
+        ax4 = fig.add_subplot(224)
+        if trajectory and len(trajectory) > 0:
+            ax4.plot(md_along_path, perm_along_path, 'r-', linewidth=2, label='Permeability')
+            ax4.set_xlabel('Measured Depth (ft)', fontsize=10)
+            ax4.set_ylabel('Permeability (md)', fontsize=10)
+            ax4.set_title('Permeability Along Well Path', fontsize=11, fontweight='bold')
+            ax4.set_yscale('log')
+            ax4.grid(True, alpha=0.3)
+            ax4.legend()
+        
+        plt.tight_layout()
+        plt.savefig(f'{self.output_dir}/{filename}', dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def plot_comparison(self, ai_trajectory, conventional_trajectory, target,
                        filename='07_trajectory_comparison.png'):
         fig = plt.figure(figsize=(14, 10))
         
@@ -167,6 +248,11 @@ class Visualizer:
         
         ax1.plot(N_ai, E_ai, TVD_ai, 'b-', linewidth=2, label='AI-Optimized')
         ax1.plot(N_conv, E_conv, TVD_conv, 'r--', linewidth=2, label='Conventional')
+        
+        # Add target marker
+        if target:
+            ax1.scatter(target['N'], target['E'], target['TVD'], c='purple', s=200, marker='X', label='Target', depthshade=True)
+
         ax1.set_xlabel('North (ft)')
         ax1.set_ylabel('East (ft)')
         ax1.set_zlabel('TVD (ft)')

@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from collections import deque
 
 class ActorNetwork(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dims=[256, 256, 128]):
@@ -89,7 +88,7 @@ class ExperienceBuffer:
 
 
 class PPOAgent:
-    def __init__(self, state_dim=24, action_dim=5, lr_actor=3e-4, lr_critic=1e-3,
+    def __init__(self, state_dim=26, action_dim=5, lr_actor=3e-4, lr_critic=1e-3,
                  gamma=0.99, lambda_gae=0.95, clip_ratio=0.2):
         self.actor = ActorNetwork(state_dim, action_dim)
         self.critic = CriticNetwork(state_dim)
