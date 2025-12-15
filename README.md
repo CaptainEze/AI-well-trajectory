@@ -9,7 +9,7 @@ Train a new model from scratch:
 ```bash
 python src/main.py
 ```
-This will take ~1-2 hours depending on your system.
+This will take ~0.5-2 hours depending on your system.
 
 ### Subsequent Runs (Load Pre-trained Model)
 Skip training and use the trained model:
@@ -26,7 +26,7 @@ This completes in ~1-2 minutes.
 
 ```
 src/
-  main.py                    # Main orchestrator (aligned with study objectives)
+  main.py                    # Central runner (aligned with study objectives)
   modules/
     physics.py               # Trajectory calculations, torque/drag, wellbore stability
     reservoir.py             # Reservoir model and synthetic data generation
@@ -34,9 +34,9 @@ src/
     environment.py          # Reinforcement learning environment
     visualization.py        # All plotting functions
 
-models/                     # Trained models saved here
-results/                    # CSV output files
-plots/                      # Generated visualizations
+models/                     # Trained models saved here (ignored in git)
+results/                    # CSV output files (ignored in git)
+plots/                      # Generated visualizations (ignored in git)
 ```
 
 ## Outputs
@@ -78,13 +78,12 @@ The system addresses three objectives:
    - Improvement percentages
    - Visualization of results
 
-## Key Features
 
 - **Physics-based**: Minimum curvature method, torque/drag, wellbore stability
 - **AI-optimized**: PPO reinforcement learning with improved reward shaping
 - **Multi-objective**: Balances target accuracy, efficiency, safety, and production
 - **Constraint-aware**: DLS limits, mud weight window, mechanical limits
-- **Comprehensive visualization**: 10 different plots showing all aspects
+- **Visualization**: 10 different plots showing all aspects
 
 ## Requirements
 
