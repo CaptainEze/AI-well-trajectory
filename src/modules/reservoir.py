@@ -2,12 +2,13 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 
 class ReservoirModel:
-    def __init__(self, grid_size=(100, 100, 30), cell_size=(50, 50, 10)):
+    def __init__(self, grid_size=(100, 100, 150), cell_size=(50, 50, 100)):
         self.grid_size = grid_size
         self.cell_size = cell_size
         self.porosity_field = None
         self.permeability_field = None
-        self.pressure_profile = None
+        self.pore_pressure_field = None
+        self.frac_gradient_field = None
         
     def generate_synthetic_reservoir(self, mean_porosity=0.18, std_porosity=0.05,
                                     pore_pressure_grad=0.52, frac_gradient=0.85):
@@ -24,10 +25,23 @@ class ReservoirModel:
         self.permeability_field = 10 ** (a * self.porosity_field + b + noise)
         self.permeability_field = np.clip(self.permeability_field, 0.01, 1000)
         
-        self.pressure_profile = {
-            'pore_pressure_grad': pore_pressure_grad,
-            'frac_gradient': frac_gradient
-        }
+        nx, ny, nz = self.grid_size
+        self.pore_pressure_field = np.zeros(self.grid_size)
+        self.frac_gradient_field = np.zeros(self.grid_size)
+        
+        for k in range(nz):
+            depth = k * self.cell_size[2]
+            base_pore_press = pore_pressure_grad + (depth / 15000) * 0.05
+            base_frac_grad = frac_gradient + (depth / 15000) * 0.10
+            
+            lateral_var_pore = np.random.normal(0, 0.02, (nx, ny))
+            lateral_var_frac = np.random.normal(0, 0.03, (nx, ny))
+            
+            self.pore_pressure_field[:, :, k] = base_pore_press + gaussian_filter(lateral_var_pore, sigma=2)
+            self.frac_gradient_field[:, :, k] = base_frac_grad + gaussian_filter(lateral_var_frac, sigma=2)
+        
+        self.pore_pressure_field = np.clip(self.pore_pressure_field, 0.45, 0.65)
+        self.frac_gradient_field = np.clip(self.frac_gradient_field, 0.75, 1.05)
         
         return self
     
@@ -42,8 +56,8 @@ class ReservoirModel:
         return {
             'porosity': float(self.porosity_field[i, j, k]),
             'permeability': float(self.permeability_field[i, j, k]),
-            'pore_pressure_grad': self.pressure_profile['pore_pressure_grad'],
-            'frac_gradient': self.pressure_profile['frac_gradient']
+            'pore_pressure_grad': float(self.pore_pressure_field[i, j, k]),
+            'frac_gradient': float(self.frac_gradient_field[i, j, k])
         }
     
     def calculate_productivity(self, trajectory_segment, reservoir_thickness=100):
@@ -64,6 +78,29 @@ class ReservoirModel:
         productivity_index = (L_reservoir / reservoir_thickness) * total_productivity
         
         return productivity_index
+    
+    def export_to_csv(self, filename):
+        import pandas as pd
+        data = []
+        nx, ny, nz = self.grid_size
+        cell_x, cell_y, cell_z = self.cell_size
+        
+        for i in range(nx):
+            for j in range(ny):
+                for k in range(nz):
+                    data.append({
+                        'N': i * cell_x,
+                        'E': j * cell_y,
+                        'TVD': k * cell_z,
+                        'porosity': self.porosity_field[i, j, k],
+                        'permeability': self.permeability_field[i, j, k],
+                        'pore_pressure_grad': self.pore_pressure_field[i, j, k],
+                        'frac_gradient': self.frac_gradient_field[i, j, k]
+                    })
+        
+        df = pd.DataFrame(data)
+        df.to_csv(filename, index=False)
+        return df
 
 
 class SyntheticDataGenerator:

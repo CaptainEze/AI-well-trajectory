@@ -5,11 +5,20 @@ class TrajectoryPhysics:
         self.interval = survey_interval
     
     def minimum_curvature(self, I1, A1, I2, A2, dMD):
+        # Ensure angles are valid
+        I1 = np.clip(I1, 0, 90)
+        I2 = np.clip(I2, 0, 90)
+        A1 = A1 % 360
+        A2 = A2 % 360
+        
         I1_rad, I2_rad = np.radians(I1), np.radians(I2)
         A1_rad, A2_rad = np.radians(A1), np.radians(A2)
         
-        beta = np.arccos(np.cos(I1_rad) * np.cos(I2_rad) + 
-                        np.sin(I1_rad) * np.sin(I2_rad) * np.cos(A2_rad - A1_rad))
+        # Clip to prevent numerical errors in arccos
+        cos_beta = np.cos(I1_rad) * np.cos(I2_rad) + \
+                   np.sin(I1_rad) * np.sin(I2_rad) * np.cos(A2_rad - A1_rad)
+        cos_beta = np.clip(cos_beta, -1.0, 1.0)
+        beta = np.arccos(cos_beta)
         
         if beta < 1e-6:
             RF = 1.0
@@ -21,6 +30,10 @@ class TrajectoryPhysics:
         dE = (dMD / 2) * (np.sin(I1_rad) * np.sin(A1_rad) + 
                           np.sin(I2_rad) * np.sin(A2_rad)) * RF
         dTVD = (dMD / 2) * (np.cos(I1_rad) + np.cos(I2_rad)) * RF
+        
+        # Validate outputs
+        if np.isnan(dN) or np.isnan(dE) or np.isnan(dTVD):
+            return 0.0, 0.0, 0.0
         
         return dN, dE, dTVD
     
@@ -85,32 +98,54 @@ class TrajectoryPhysics:
             'inclination': I, 'azimuth': A, 'DLS': 0
         })
         
-        while TVD < target['TVD'] - 50:
-            if I < max_inclination:
+        target_N = target['N']
+        target_E = target['E']
+        target_TVD = target['TVD']
+        
+        while TVD < target_TVD - 50:
+            delta_N = target_N - N
+            delta_E = target_E - E
+            delta_TVD = target_TVD - TVD
+            horiz_dist = np.sqrt(delta_N**2 + delta_E**2)
+            
+            required_A = np.degrees(np.arctan2(delta_E, delta_N)) % 360
+            A_error = required_A - A
+            if A_error > 180:
+                A_error -= 360
+            elif A_error < -180:
+                A_error += 360
+            
+            A_new = A + np.clip(A_error, -5, 5)
+            
+            required_I = np.degrees(np.arctan2(horiz_dist, delta_TVD))
+            required_I = min(required_I, max_inclination)
+            
+            if horiz_dist < 500:
+                I_new = max(I - BUR * (self.interval / 100), 0)
+            elif I < required_I:
                 I_new = min(I + BUR * (self.interval / 100), max_inclination)
             else:
-                I_new = max_inclination
+                I_new = I
             
-            dN, dE, dTVD = self.minimum_curvature(I, A, I_new, A, self.interval)
+            dN, dE, dTVD = self.minimum_curvature(I, A, I_new, A_new, self.interval)
             
             MD += self.interval
             TVD += dTVD
             N += dN
             E += dE
             
-            DLS = self.dogleg_severity(I, A, I_new, A, self.interval)
+            DLS = self.dogleg_severity(I, A, I_new, A_new, self.interval)
             
             trajectory.append({
                 'MD': MD, 'TVD': TVD, 'N': N, 'E': E,
-                'inclination': I_new, 'azimuth': A, 'DLS': DLS
+                'inclination': I_new, 'azimuth': A_new, 'DLS': DLS
             })
             
             I = I_new
+            A = A_new
             
-            HD = np.sqrt(N**2 + E**2)
-            target_HD = np.sqrt(target['N']**2 + target['E']**2)
-            
-            if HD >= target_HD * 0.95 and abs(TVD - target['TVD']) < 100:
+            dist_to_target = np.sqrt(delta_N**2 + delta_E**2 + delta_TVD**2)
+            if dist_to_target < 150:
                 break
         
         return trajectory

@@ -27,7 +27,7 @@ class WellOptimizationSystem:
         print("="*70)
         
         print("\nInitializing reservoir model...")
-        reservoir = ReservoirModel(grid_size=(100, 100, 30), cell_size=(50, 50, 10))
+        reservoir = ReservoirModel(grid_size=(100, 100, 150), cell_size=(50, 50, 100))
         reservoir.generate_synthetic_reservoir(
             mean_porosity=0.18, 
             std_porosity=0.05,
@@ -35,6 +35,10 @@ class WellOptimizationSystem:
             frac_gradient=0.85
         )
         print("Reservoir model generated successfully")
+        
+        print("Exporting reservoir formation data...")
+        reservoir.export_to_csv(f'{self.results_dir}/reservoir_formation.csv')
+        print(f"Reservoir data saved to {self.results_dir}/reservoir_formation.csv")
         
         print("\nDefining target location...")
         target = {
@@ -81,9 +85,11 @@ class WellOptimizationSystem:
             filename='02_conventional_inclination_azimuth.png'
         )
         
-        print(f"\nConventional trajectory: {len(conventional_trajectory)} survey points")
-        print(f"Final MD: {conventional_trajectory[-1]['MD']:.1f} ft")
-        print(f"Final TVD: {conventional_trajectory[-1]['TVD']:.1f} ft")
+        print(f"\nConventional trajectory summary:")
+        print(f"  Total survey points: {len(conventional_trajectory)}")
+        print(f"  Final position: N={conventional_trajectory[-1]['N']:.1f} ft, E={conventional_trajectory[-1]['E']:.1f} ft, TVD={conventional_trajectory[-1]['TVD']:.1f} ft")
+        print(f"  Target position: N={target['N']:.1f} ft, E={target['E']:.1f} ft, TVD={target['TVD']:.1f} ft")
+        print(f"  Final MD: {conventional_trajectory[-1]['MD']:.1f} ft")
         
         results_obj1 = pd.DataFrame({
             'Component': ['State Dimension', 'Action Dimension', 'Actor Parameters', 
@@ -112,7 +118,7 @@ class WellOptimizationSystem:
             episode_rewards = []
         else:
             print("\nTraining PPO agent...")
-            n_episodes = 200
+            n_episodes = 300
             
             episode_rewards = []
             best_reward = -float('inf')
@@ -174,7 +180,7 @@ class WellOptimizationSystem:
         done = False
         
         for _ in range(steps_per_episode):
-            action, _, _ = agent.select_action(state)
+            action, _, _ = agent.select_action(state, deterministic=True)
             state, _, done, _ = env.step(action)
             
             if done:
@@ -182,13 +188,19 @@ class WellOptimizationSystem:
         
         optimized_trajectory = env.get_trajectory()
         
+        print(f"\nOptimized trajectory summary:")
+        print(f"  Total survey points: {len(optimized_trajectory)}")
+        print(f"  Final position: N={optimized_trajectory[-1]['N']:.1f} ft, E={optimized_trajectory[-1]['E']:.1f} ft, TVD={optimized_trajectory[-1]['TVD']:.1f} ft")
+        print(f"  Target position: N={target['N']:.1f} ft, E={target['E']:.1f} ft, TVD={target['TVD']:.1f} ft")
+        print(f"  Max inclination: {max([p['inclination'] for p in optimized_trajectory]):.2f}°")
+        
         self.visualizer.plot_trajectory_3d(
             optimized_trajectory,
             filename='08_optimized_trajectory_3d.png'
         )
         self.visualizer.plot_inclination_azimuth(
             optimized_trajectory,
-            filename='09_optimized_inclination_azimuth.png'
+            filename='02_optimized_inclination_azimuth.png'
         )
         self.visualizer.plot_dogleg_severity(
             optimized_trajectory,
@@ -199,10 +211,24 @@ class WellOptimizationSystem:
             optimized_trajectory,
             filename='05_reservoir_properties.png'
         )
+        self.visualizer.plot_reservoir_properties_4panel(
+            reservoir,
+            filename='08_reservoir_properties_4panel.png'
+        )
+        self.visualizer.plot_reservoir_combined_with_well(
+            reservoir,
+            optimized_trajectory,
+            filename='09_reservoir_combined_well.png'
+        )
         self.visualizer.plot_3d_reservoir_with_trajectory(
             reservoir,
             optimized_trajectory,
             filename='10_3d_reservoir_trajectory.png'
+        )
+        self.visualizer.plot_reservoir_contour_slices(
+            reservoir,
+            optimized_trajectory,
+            filename='11_reservoir_contour_slices.png'
         )
         
         if episode_rewards:

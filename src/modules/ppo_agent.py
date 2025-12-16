@@ -100,11 +100,16 @@ class PPOAgent:
         self.lambda_gae = lambda_gae
         self.clip_ratio = clip_ratio
         
-    def select_action(self, state):
+    def select_action(self, state, deterministic=False):
         state_tensor = torch.FloatTensor(state).unsqueeze(0)
         
         with torch.no_grad():
-            action, log_prob = self.actor.sample(state_tensor)
+            if deterministic:
+                action_mean, _ = self.actor(state_tensor)
+                action = action_mean
+                log_prob = torch.zeros(1)
+            else:
+                action, log_prob = self.actor.sample(state_tensor)
             value = self.critic(state_tensor)
         
         return action.numpy()[0], log_prob.item(), value.item()

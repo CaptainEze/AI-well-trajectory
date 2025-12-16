@@ -58,6 +58,13 @@ class WellPlanningEnv:
         I_to_target = np.degrees(np.arctan2(HD_current, target_TVD - self.current_TVD)) if target_TVD > self.current_TVD else 0
         A_to_target = np.degrees(np.arctan2(delta_E, delta_N)) % 360
         
+        # Compute azimuth error (shortest angular distance)
+        azimuth_error = A_to_target - self.current_A
+        if azimuth_error > 180:
+            azimuth_error -= 360
+        elif azimuth_error < -180:
+            azimuth_error += 360
+        
         props = self.reservoir.get_properties(self.current_N, self.current_E, self.current_TVD)
         
         torque, drag = self.physics.torque_drag(self.trajectory, 
@@ -89,15 +96,19 @@ class WellPlanningEnv:
             np.log10(props['permeability'] + 1) / 3,
             props['pore_pressure_grad'] / 1.0,
             props['frac_gradient'] / 1.2,
-            0.75,
-            0.5
+            azimuth_error / 180,  # Azimuth error in range [-1, 1]
+            self.steps / self.max_steps  # Episode progress
         ], dtype=np.float32)
         
         return state
     
     def step(self, action):
-        dI = np.clip(action[0] * 2, -2, 2)
-        dA = np.clip(action[1] * 2, -2, 2)
+        # Validate action input
+        if np.any(np.isnan(action)) or np.any(np.isinf(action)):
+            action = np.zeros(5)
+        
+        dI = np.clip(action[0] * 1.5, -1.5, 1.5)
+        dA = np.clip(action[1] * 3, -3, 3)
         
         new_I = np.clip(self.current_I + dI, 0, self.constraints['max_inclination'])
         new_A = (self.current_A + dA) % 360
@@ -116,6 +127,11 @@ class WellPlanningEnv:
         dN, dE, dTVD = self.physics.minimum_curvature(
             self.current_I, self.current_A, new_I, new_A, dMD
         )
+        
+        # Validate trajectory deltas
+        if np.isnan(dN) or np.isnan(dE) or np.isnan(dTVD):
+            dN, dE, dTVD = 0.0, 0.0, 0.0
+            DLS = 0.0
         
         self.current_MD += dMD
         self.current_TVD += dTVD
@@ -154,18 +170,18 @@ class WellPlanningEnv:
         
         if horiz_dist < 150 and vert_dist < 150:
             self.done = True
-            reward += 20000
-        elif self.current_TVD > target_TVD + 1000:
+            reward += 500000
+        elif self.current_TVD > target_TVD + 500:
             self.done = True
-            reward -= 5000
+            reward -= 100000
         elif self.steps >= self.max_steps:
             self.done = True
-            reward -= 5000 + (dist_to_target * 5)
+            reward -= 50000 + (dist_to_target * 50)
         elif DLS > self.constraints['DLS_max']:
-            reward -= 100
+            reward -= 200
         elif MD_TVD_ratio > 2.5:
             self.done = True
-            reward -= 3000
+            reward -= 50000
         
         next_state = self._get_state()
         
@@ -176,38 +192,49 @@ class WellPlanningEnv:
         target_E = self.target.get('E', 4000)
         target_TVD = self.target.get('TVD', 15000)
         
-        R_smoothness = 10 if DLS <= 3 else -50 * (DLS - 3)**2
+        current_dist = np.sqrt((target_N - self.current_N)**2 + 
+                               (target_E - self.current_E)**2 + 
+                               (target_TVD - self.current_TVD)**2)
         
-        R_azimuth_stability = 0
+        R_distance = -current_dist / 10
+        
+        R_progress = 0
+        if len(self.trajectory) > 1:
+            prev_dist = np.sqrt((target_N - self.trajectory[-2]['N'])**2 + 
+                                (target_E - self.trajectory[-2]['E'])**2 + 
+                                (target_TVD - self.trajectory[-2]['TVD'])**2)
+            R_progress = (prev_dist - current_dist) * 2
+        
+        R_quality = 0
+        if DLS <= 3:
+            R_quality += 5
+        elif DLS > 8:
+            R_quality -= 50
+        elif DLS > 5:
+            R_quality -= 20
+        
+        # Strong penalty for going too deep
+        if self.current_TVD > target_TVD:
+            tvd_overshoot = self.current_TVD - target_TVD
+            R_quality -= tvd_overshoot / 10
+        
+        # Azimuth error penalty - guide agent toward target direction
+        delta_N = target_N - self.current_N
+        delta_E = target_E - self.current_E
+        required_azimuth = np.degrees(np.arctan2(delta_E, delta_N)) % 360
+        azimuth_error = abs(self.current_A - required_azimuth)
+        if azimuth_error > 180:
+            azimuth_error = 360 - azimuth_error
+        
+        # Strong penalty for pointing away from target
+        R_quality -= azimuth_error / 10
+        
         if len(self.trajectory) > 1:
             dA = abs(self.trajectory[-1]['azimuth'] - self.trajectory[-2]['azimuth'])
             if dA > 180:
                 dA = 360 - dA
-            if dA <= 3:
-                R_azimuth_stability = 5
-            elif dA <= 8:
-                R_azimuth_stability = -10 * (dA - 3)
-            else:
-                R_azimuth_stability = -50 - 20 * (dA - 8)
-        
-        HD_target = np.sqrt(target_N**2 + target_E**2)
-        required_I = np.degrees(np.arctan2(HD_target, target_TVD - 3000))
-        progress_depth = (self.current_TVD - 3000) / (target_TVD - 3000) if target_TVD > 3000 else 0
-        
-        R_inclination_profile = 0
-        if progress_depth < 0.3:
-            if self.current_I < required_I * 0.5:
-                R_inclination_profile = -30
-            elif self.current_I < required_I:
-                R_inclination_profile = 20
-        elif progress_depth < 0.7:
-            if abs(self.current_I - required_I) < 10:
-                R_inclination_profile = 30
-            else:
-                R_inclination_profile = -20
-        else:
-            if self.current_I < required_I * 0.7:
-                R_inclination_profile = -40
+            if dA > 15:
+                R_quality -= 5
         
         props = self.reservoir.get_properties(self.current_N, self.current_E, self.current_TVD)
         stable, _ = self.physics.wellbore_stability(
@@ -215,23 +242,10 @@ class WellPlanningEnv:
             props['pore_pressure_grad'],
             props['frac_gradient']
         )
-        R_stability = 15 if stable else -100
+        if not stable:
+            R_quality -= 10
         
-        R_reservoir = 3 * np.sqrt(props['porosity'] * props['permeability'] / 100)
-        
-        delta_N = target_N - self.current_N
-        delta_E = target_E - self.current_E
-        if abs(delta_N) > 50 or abs(delta_E) > 50:
-            required_azimuth = np.degrees(np.arctan2(delta_E, delta_N)) % 360
-            azimuth_error = abs(self.current_A - required_azimuth)
-            if azimuth_error > 180:
-                azimuth_error = 360 - azimuth_error
-            R_direction = -azimuth_error / 50
-        else:
-            R_direction = 0
-        
-        R_total = (R_smoothness + R_azimuth_stability + R_inclination_profile + 
-                   R_stability + R_reservoir + R_direction)
+        R_total = R_progress + R_distance + R_quality
         
         return R_total
     

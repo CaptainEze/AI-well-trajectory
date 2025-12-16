@@ -152,53 +152,255 @@ class Visualizer:
         plt.savefig(f'{self.output_dir}/{filename}', dpi=300, bbox_inches='tight')
         plt.close()
     
+    def plot_reservoir_properties_4panel(self, reservoir, filename='08_reservoir_properties_4panel.png'):
+        fig = plt.figure(figsize=(18, 16))
+        
+        nx, ny, nz = reservoir.grid_size
+        sample_points = 18000
+        np.random.seed(42)
+        
+        x_samples = np.random.randint(0, nx, sample_points)
+        y_samples = np.random.randint(0, ny, sample_points)
+        z_samples = np.random.randint(0, nz, sample_points)
+        
+        x_coords = x_samples * 50
+        y_coords = y_samples * 50
+        z_coords = z_samples * 100
+        
+        porosity_samples = reservoir.porosity_field[x_samples, y_samples, z_samples]
+        perm_samples = reservoir.permeability_field[x_samples, y_samples, z_samples]
+        
+        ax1 = fig.add_subplot(221, projection='3d')
+        sc1 = ax1.scatter(x_coords, y_coords, z_coords, 
+                         c=porosity_samples, cmap='Greens', 
+                         s=6, alpha=0.3, vmin=0.05, vmax=0.35)
+        ax1.set_xlabel('North (ft)', fontsize=10)
+        ax1.set_ylabel('East (ft)', fontsize=10)
+        ax1.set_zlabel('TVD (ft)', fontsize=10)
+        ax1.set_title('Porosity Distribution', fontsize=12, fontweight='bold')
+        ax1.invert_zaxis()
+        cbar1 = plt.colorbar(sc1, ax=ax1, pad=0.1, shrink=0.6)
+        cbar1.set_label('Porosity', fontsize=9)
+        
+        ax2 = fig.add_subplot(222, projection='3d')
+        log_perm = np.log10(perm_samples + 1)
+        sc2 = ax2.scatter(x_coords, y_coords, z_coords,
+                         c=log_perm, cmap='Reds',
+                         s=6, alpha=0.3, vmin=0, vmax=3)
+        ax2.set_xlabel('North (ft)', fontsize=10)
+        ax2.set_ylabel('East (ft)', fontsize=10)
+        ax2.set_zlabel('TVD (ft)', fontsize=10)
+        ax2.set_title('Permeability Distribution', fontsize=12, fontweight='bold')
+        ax2.invert_zaxis()
+        cbar2 = plt.colorbar(sc2, ax=ax2, pad=0.1, shrink=0.6)
+        cbar2.set_label('Log10(Perm md)', fontsize=9)
+        
+        ax3 = fig.add_subplot(223, projection='3d')
+        pore_pressure_samples = reservoir.pore_pressure_field[x_samples, y_samples, z_samples]
+        sc3 = ax3.scatter(x_coords, y_coords, z_coords,
+                         c=pore_pressure_samples, cmap='Blues',
+                         s=6, alpha=0.3, vmin=0.45, vmax=0.65)
+        ax3.set_xlabel('North (ft)', fontsize=10)
+        ax3.set_ylabel('East (ft)', fontsize=10)
+        ax3.set_zlabel('TVD (ft)', fontsize=10)
+        ax3.set_title('Pore Pressure Gradient', fontsize=12, fontweight='bold')
+        ax3.invert_zaxis()
+        cbar3 = plt.colorbar(sc3, ax=ax3, pad=0.1, shrink=0.6)
+        cbar3.set_label('PPG (psi/ft)', fontsize=9)
+        
+        ax4 = fig.add_subplot(224, projection='3d')
+        frac_grad_samples = reservoir.frac_gradient_field[x_samples, y_samples, z_samples]
+        sc4 = ax4.scatter(x_coords, y_coords, z_coords,
+                         c=frac_grad_samples, cmap='Purples',
+                         s=6, alpha=0.3, vmin=0.75, vmax=1.05)
+        ax4.set_xlabel('North (ft)', fontsize=10)
+        ax4.set_ylabel('East (ft)', fontsize=10)
+        ax4.set_zlabel('TVD (ft)', fontsize=10)
+        ax4.set_title('Fracture Gradient', fontsize=12, fontweight='bold')
+        ax4.invert_zaxis()
+        cbar4 = plt.colorbar(sc4, ax=ax4, pad=0.1, shrink=0.6)
+        cbar4.set_label('Frac Grad (psi/ft)', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig(f'{self.output_dir}/{filename}', dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def plot_reservoir_combined_with_well(self, reservoir, trajectory, filename='09_reservoir_combined_well.png'):
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        nx, ny, nz = reservoir.grid_size
+        sample_points = 20000
+        np.random.seed(42)
+        
+        x_samples = np.random.randint(0, nx, sample_points)
+        y_samples = np.random.randint(0, ny, sample_points)
+        z_samples = np.random.randint(0, nz, sample_points)
+        
+        x_coords = x_samples * 50
+        y_coords = y_samples * 50
+        z_coords = z_samples * 100
+        
+        porosity_samples = reservoir.porosity_field[x_samples, y_samples, z_samples]
+        perm_samples = reservoir.permeability_field[x_samples, y_samples, z_samples]
+        
+        points_per_property = sample_points // 4
+        
+        por_mask = slice(0, points_per_property)
+        perm_mask = slice(points_per_property, 2*points_per_property)
+        pore_mask = slice(2*points_per_property, 3*points_per_property)
+        frac_mask = slice(3*points_per_property, sample_points)
+        
+        ax.scatter(x_coords[por_mask], y_coords[por_mask], z_coords[por_mask],
+                  c=porosity_samples[por_mask], cmap='Greens',
+                  s=8, alpha=0.25, vmin=0.05, vmax=0.35, label='Porosity')
+        
+        log_perm = np.log10(perm_samples[perm_mask] + 1)
+        ax.scatter(x_coords[perm_mask], y_coords[perm_mask], z_coords[perm_mask],
+                  c=log_perm, cmap='Reds',
+                  s=8, alpha=0.25, vmin=0, vmax=3, label='Permeability')
+        
+        depth_factor = z_coords[pore_mask] / np.max(z_coords)
+        ax.scatter(x_coords[pore_mask], y_coords[pore_mask], z_coords[pore_mask],
+                  c=depth_factor, cmap='Blues',
+                  s=8, alpha=0.25, label='Pore Pressure')
+        
+        depth_factor_frac = z_coords[frac_mask] / np.max(z_coords)
+        ax.scatter(x_coords[frac_mask], y_coords[frac_mask], z_coords[frac_mask],
+                  c=depth_factor_frac, cmap='Purples',
+                  s=8, alpha=0.25, label='Frac Gradient')
+        
+        if trajectory and len(trajectory) > 0:
+            N = [p['N'] for p in trajectory]
+            E = [p['E'] for p in trajectory]
+            TVD = [p['TVD'] for p in trajectory]
+            ax.plot(N, E, TVD, 'yellow', linewidth=4, label='Well Path', zorder=10)
+        
+        ax.set_xlabel('North (ft)', fontsize=11)
+        ax.set_ylabel('East (ft)', fontsize=11)
+        ax.set_zlabel('TVD (ft)', fontsize=11)
+        ax.set_title('Combined Reservoir Properties with Well Trajectory', fontsize=14, fontweight='bold')
+        ax.invert_zaxis()
+        ax.legend(loc='upper left', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig(f'{self.output_dir}/{filename}', dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def plot_reservoir_contour_slices(self, reservoir, trajectory, filename='11_reservoir_contour_slices.png'):
+        fig = plt.figure(figsize=(20, 12))
+        
+        nx, ny, nz = reservoir.grid_size
+        depth_slices = [29, 59, 89, 119, 149]
+        
+        for idx, k in enumerate(depth_slices):
+            ax = fig.add_subplot(2, 5, idx + 1)
+            
+            porosity_slice = reservoir.porosity_field[:, :, k]
+            x_coords = np.arange(nx) * 50
+            y_coords = np.arange(ny) * 50
+            X, Y = np.meshgrid(x_coords, y_coords)
+            
+            contour = ax.contourf(X, Y, porosity_slice.T, levels=15, cmap='Greens')
+            ax.set_xlabel('North (ft)', fontsize=9)
+            ax.set_ylabel('East (ft)', fontsize=9)
+            ax.set_title(f'Porosity @ TVD={k*100}ft', fontsize=10, fontweight='bold')
+            ax.set_aspect('equal')
+            
+            if trajectory and len(trajectory) > 0:
+                traj_at_depth = [p for p in trajectory if abs(p['TVD'] - k*10) < 20]
+                if traj_at_depth:
+                    N_vals = [p['N'] for p in traj_at_depth]
+                    E_vals = [p['E'] for p in traj_at_depth]
+                    ax.scatter(N_vals, E_vals, c='red', s=20, marker='o', edgecolors='black', linewidths=0.5, zorder=5)
+            
+            plt.colorbar(contour, ax=ax, fraction=0.046, pad=0.04)
+        
+        for idx, k in enumerate(depth_slices):
+            ax = fig.add_subplot(2, 5, idx + 6)
+            
+            perm_slice = reservoir.permeability_field[:, :, k]
+            log_perm_slice = np.log10(perm_slice.T + 1)
+            
+            contour = ax.contourf(X, Y, log_perm_slice, levels=15, cmap='Reds')
+            ax.set_xlabel('North (ft)', fontsize=9)
+            ax.set_ylabel('East (ft)', fontsize=9)
+            ax.set_title(f'Permeability @ TVD={k*100}ft', fontsize=10, fontweight='bold')
+            ax.set_aspect('equal')
+            
+            if trajectory and len(trajectory) > 0:
+                traj_at_depth = [p for p in trajectory if abs(p['TVD'] - k*100) < 200]
+                if traj_at_depth:
+                    N_vals = [p['N'] for p in traj_at_depth]
+                    E_vals = [p['E'] for p in traj_at_depth]
+                    ax.scatter(N_vals, E_vals, c='yellow', s=20, marker='o', edgecolors='black', linewidths=0.5, zorder=5)
+            
+            plt.colorbar(contour, ax=ax, fraction=0.046, pad=0.04)
+        
+        plt.tight_layout()
+        plt.savefig(f'{self.output_dir}/{filename}', dpi=300, bbox_inches='tight')
+        plt.close()
+    
     def plot_3d_reservoir_with_trajectory(self, reservoir, trajectory, filename='10_3d_reservoir_trajectory.png'):
         fig = plt.figure(figsize=(16, 12))
         
         ax1 = fig.add_subplot(221, projection='3d')
         
         nx, ny, nz = reservoir.grid_size
-        x_slice = nx // 2
-        y_slice = ny // 2
+        sample_points = 2000
+        np.random.seed(42)
         
-        z_coords = np.arange(nz) * 10
-        y_coords = np.arange(ny) * 50
-        x_coords = np.arange(nx) * 50
+        x_samples = np.random.randint(0, nx, sample_points)
+        y_samples = np.random.randint(0, ny, sample_points)
+        z_samples = np.random.randint(0, nz, sample_points)
         
-        Y, Z = np.meshgrid(y_coords, z_coords)
-        porosity_slice_xz = reservoir.porosity_field[x_slice, :, :].T
+        porosity_samples = reservoir.porosity_field[x_samples, y_samples, z_samples]
         
-        ax1.plot_surface(np.full_like(Y, x_slice * 50), Y, Z, 
-                        facecolors=plt.cm.viridis(porosity_slice_xz / 0.35),
-                        alpha=0.6, shade=False)
+        x_coords = x_samples * 50
+        y_coords = y_samples * 50
+        z_coords = z_samples * 100
+        
+        scatter = ax1.scatter(x_coords, y_coords, z_coords, 
+                             c=porosity_samples, cmap='viridis', 
+                             s=1, alpha=0.3, vmin=0.05, vmax=0.35)
         
         if trajectory and len(trajectory) > 0:
             N = [p['N'] for p in trajectory]
             E = [p['E'] for p in trajectory]
             TVD = [p['TVD'] for p in trajectory]
-            ax1.plot(N, E, TVD, 'r-', linewidth=3, label='Well Path')
+            ax1.plot(N, E, TVD, 'yellow', linewidth=6, label='Well Path', alpha=0.9, zorder=10)
+            ax1.scatter(N[::10], E[::10], TVD[::10], c='red', s=50, edgecolors='black', linewidths=1, zorder=11)
         
         ax1.set_xlabel('North (ft)', fontsize=10)
         ax1.set_ylabel('East (ft)', fontsize=10)
         ax1.set_zlabel('TVD (ft)', fontsize=10)
         ax1.set_title('3D Reservoir Porosity with Well Trajectory', fontsize=11, fontweight='bold')
+        ax1.invert_zaxis()
         ax1.legend()
+        cbar1 = plt.colorbar(scatter, ax=ax1, pad=0.1, shrink=0.5)
+        cbar1.set_label('Porosity', fontsize=9)
         
         ax2 = fig.add_subplot(222, projection='3d')
-        perm_slice_xz = np.log10(reservoir.permeability_field[x_slice, :, :].T + 1)
         
-        ax2.plot_surface(np.full_like(Y, x_slice * 50), Y, Z,
-                        facecolors=plt.cm.plasma(perm_slice_xz / 3),
-                        alpha=0.6, shade=False)
+        perm_samples = reservoir.permeability_field[x_samples, y_samples, z_samples]
+        log_perm = np.log10(perm_samples + 1)
+        
+        scatter2 = ax2.scatter(x_coords, y_coords, z_coords,
+                              c=log_perm, cmap='plasma',
+                              s=1, alpha=0.3, vmin=0, vmax=3)
         
         if trajectory and len(trajectory) > 0:
-            ax2.plot(N, E, TVD, 'r-', linewidth=3, label='Well Path')
+            ax2.plot(N, E, TVD, 'yellow', linewidth=6, label='Well Path', alpha=0.9, zorder=10)
+            ax2.scatter(N[::10], E[::10], TVD[::10], c='red', s=50, edgecolors='black', linewidths=1, zorder=11)
         
         ax2.set_xlabel('North (ft)', fontsize=10)
         ax2.set_ylabel('East (ft)', fontsize=10)
         ax2.set_zlabel('TVD (ft)', fontsize=10)
         ax2.set_title('3D Reservoir Permeability with Well Trajectory', fontsize=11, fontweight='bold')
+        ax2.invert_zaxis()
         ax2.legend()
+        cbar2 = plt.colorbar(scatter2, ax=ax2, pad=0.1, shrink=0.5)
+        cbar2.set_label('Log10(Perm)', fontsize=9)
         
         ax3 = fig.add_subplot(223)
         if trajectory and len(trajectory) > 0:
@@ -249,9 +451,8 @@ class Visualizer:
         ax1.plot(N_ai, E_ai, TVD_ai, 'b-', linewidth=2, label='AI-Optimized')
         ax1.plot(N_conv, E_conv, TVD_conv, 'r--', linewidth=2, label='Conventional')
         
-        # Add target marker
         if target:
-            ax1.scatter(target['N'], target['E'], target['TVD'], c='purple', s=200, marker='X', label='Target', depthshade=True)
+            ax1.scatter(target['N'], target['E'], target['TVD'], c='purple', s=500, marker='X', label='Target', edgecolors='black', linewidths=3, depthshade=False, zorder=100)
 
         ax1.set_xlabel('North (ft)')
         ax1.set_ylabel('East (ft)')
