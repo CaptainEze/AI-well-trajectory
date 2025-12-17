@@ -9,3 +9,5 @@ __pycache__/
 *.log
 plots
 models
+comparison_report.txt
+comparison_plots
