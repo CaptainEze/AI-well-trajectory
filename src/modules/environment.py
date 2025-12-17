@@ -37,7 +37,7 @@ class WellPlanningEnv:
         
         self.done = False
         self.steps = 0
-        self.max_steps = 1500
+        self.max_steps = 3000  # Increased for deeper wells
         self.max_inclination_reached = 0
         
         return self._get_state()
@@ -55,6 +55,8 @@ class WellPlanningEnv:
         
         delta_N = target_N - self.current_N
         delta_E = target_E - self.current_E
+        delta_TVD = target_TVD - self.current_TVD
+        
         I_to_target = np.degrees(np.arctan2(HD_current, target_TVD - self.current_TVD)) if target_TVD > self.current_TVD else 0
         A_to_target = np.degrees(np.arctan2(delta_E, delta_N)) % 360
         
@@ -72,32 +74,32 @@ class WellPlanningEnv:
                                                  12.5)
         
         state = np.array([
-            self.current_MD / 30000,
-            self.current_TVD / 20000,
-            self.current_I / 90,
-            self.current_A / 360,
-            self.current_N / 50000,
-            self.current_E / 50000,
-            self.trajectory[-1]['DLS'] / 10 if len(self.trajectory) > 0 else 0,
-            HD_current / 40000,
-            dist_to_target / 50000,
-            I_to_target / 90,
-            A_to_target / 360,
-            (target_TVD - self.current_TVD) / 20000,
-            delta_N / 10000,
-            delta_E / 10000,
-            torque / 50000,
-            drag / 100000,
+            np.clip(self.current_MD / 40000, -1, 1),
+            np.clip(self.current_TVD / 20000, -1, 1),
+            np.clip(self.current_I / 90, -1, 1),
+            np.clip(self.current_A / 360, -1, 1),
+            np.clip(self.current_N / 10000, -1, 1),
+            np.clip(self.current_E / 10000, -1, 1),
+            np.clip(self.trajectory[-1]['DLS'] / 10 if len(self.trajectory) > 0 else 0, -1, 1),
+            np.clip(HD_current / 10000, -1, 1),
+            np.clip(dist_to_target / 30000, -1, 1),
+            np.clip(I_to_target / 90, -1, 1),
+            np.clip(A_to_target / 360, -1, 1),
+            np.clip((target_TVD - self.current_TVD) / 20000, -1, 1),
+            np.clip(delta_N / 5000, -1, 1),
+            np.clip(delta_E / 5000, -1, 1),
+            np.clip(torque / 50000, -1, 1),
+            np.clip(drag / 100000, -1, 1),
             0.5,
-            self.constraints['friction_factor'],
+            np.clip(self.constraints['friction_factor'] / 0.3, -1, 1),
             0.5,
             0.5,
-            props['porosity'],
-            np.log10(props['permeability'] + 1) / 3,
-            props['pore_pressure_grad'] / 1.0,
-            props['frac_gradient'] / 1.2,
-            azimuth_error / 180,  # Azimuth error in range [-1, 1]
-            self.steps / self.max_steps  # Episode progress
+            np.clip(props['porosity'] / 0.35, 0, 1),
+            np.clip(np.log10(props['permeability'] + 1) / 3, 0, 1),
+            np.clip(props['pore_pressure_grad'] / 0.65, 0, 1),
+            np.clip(props['frac_gradient'] / 1.05, 0, 1),
+            np.clip(azimuth_error / 180, -1, 1),
+            np.clip(self.steps / self.max_steps, 0, 1)
         ], dtype=np.float32)
         
         return state
@@ -107,10 +109,30 @@ class WellPlanningEnv:
         if np.any(np.isnan(action)) or np.any(np.isinf(action)):
             action = np.zeros(5)
         
-        dI = np.clip(action[0] * 1.5, -1.5, 1.5)
-        dA = np.clip(action[1] * 3, -3, 3)
+        # ACTION SPACE FIX: Reduced control authority for smoother trajectories
+        dI = np.clip(action[0] * 3.0, -3.0, 3.0)  # Reduced from 5.0
+        dA = np.clip(action[1] * 8.0, -8.0, 8.0)  # Reduced from 12.0
         
-        new_I = np.clip(self.current_I + dI, 0, self.constraints['max_inclination'])
+        # Use additional action dimensions for finer control
+        dI_bias = np.clip(action[2] * 0.5, -0.5, 0.5)  # Reduced from 1.0
+        dA_bias = np.clip(action[3] * 1.0, -1.0, 1.0)  # Reduced from 2.0
+        
+        dI = dI + dI_bias
+        dA = dA + dA_bias
+        
+        # INCLINATION CONSTRAINT: Adaptive max inclination based on target depth
+        target_TVD = self.target.get('TVD', 15000)
+        delta_TVD = target_TVD - self.current_TVD
+        
+        # Limit inclination when deep vertical progress is still needed
+        if delta_TVD > 2000:
+            adaptive_max_inc = min(75.0, self.constraints['max_inclination'])
+        elif delta_TVD > 500:
+            adaptive_max_inc = min(80.0, self.constraints['max_inclination'])
+        else:
+            adaptive_max_inc = self.constraints['max_inclination']
+        
+        new_I = np.clip(self.current_I + dI, 0, adaptive_max_inc)
         new_A = (self.current_A + dA) % 360
         
         dMD = 30
@@ -121,7 +143,7 @@ class WellPlanningEnv:
             scale_factor = self.constraints['DLS_max'] / (DLS_preview + 1e-6)
             dI_scaled = dI * scale_factor
             dA_scaled = dA * scale_factor
-            new_I = np.clip(self.current_I + dI_scaled, 0, self.constraints['max_inclination'])
+            new_I = np.clip(self.current_I + dI_scaled, 0, adaptive_max_inc)
             new_A = (self.current_A + dA_scaled) % 360
         
         dN, dE, dTVD = self.physics.minimum_curvature(
@@ -152,7 +174,6 @@ class WellPlanningEnv:
         
         reward = self._compute_reward(DLS)
         
-        target_TVD = self.target.get('TVD', 15000)
         target_N = self.target.get('N', 4000)
         target_E = self.target.get('E', 4000)
         
@@ -168,20 +189,29 @@ class WellPlanningEnv:
         horiz_dist = np.sqrt((target_N - self.current_N)**2 + (target_E - self.current_E)**2)
         vert_dist = abs(target_TVD - self.current_TVD)
         
-        if horiz_dist < 150 and vert_dist < 150:
+        # SUCCESS CRITERIA: More generous success zone
+        if horiz_dist < 300 and vert_dist < 300:
             self.done = True
-            reward += 500000
-        elif self.current_TVD > target_TVD + 500:
+            # Scale bonus by how close we actually got
+            proximity_bonus = 1.0 - (dist_to_target / 500)
+            reward += 500000 * proximity_bonus
+        # FAILURE CONDITIONS
+        elif self.current_TVD > target_TVD + 1000:  # Overshoot significantly
             self.done = True
             reward -= 100000
         elif self.steps >= self.max_steps:
             self.done = True
+            # Penalty based on distance remaining
             reward -= 50000 + (dist_to_target * 50)
-        elif DLS > self.constraints['DLS_max']:
-            reward -= 200
+        elif DLS > self.constraints['DLS_max'] * 1.2:  # Allow slight violations
+            reward -= 500
         elif MD_TVD_ratio > 2.5:
             self.done = True
             reward -= 50000
+        # NEW: Penalty for stopping too short
+        elif self.current_TVD < target_TVD - 2000 and horiz_dist < 500:
+            # We're horizontally close but way too shallow - penalize stalling
+            reward -= 100
         
         next_state = self._get_state()
         
@@ -192,50 +222,95 @@ class WellPlanningEnv:
         target_E = self.target.get('E', 4000)
         target_TVD = self.target.get('TVD', 15000)
         
-        current_dist = np.sqrt((target_N - self.current_N)**2 + 
-                               (target_E - self.current_E)**2 + 
-                               (target_TVD - self.current_TVD)**2)
+        # Horizontal and vertical distances
+        horiz_dist = np.sqrt((target_N - self.current_N)**2 + (target_E - self.current_E)**2)
+        vert_dist = abs(target_TVD - self.current_TVD)
         
-        R_distance = -current_dist / 10
+        # MD/TVD efficiency
+        MD_TVD_ratio = self.current_MD / (self.current_TVD + 1e-6)
         
+        # IMPROVED REWARD STRUCTURE
+        
+        # 1. Distance-based rewards (stronger vertical emphasis)
+        R_horiz = -horiz_dist / 30.0  # Reduced weight
+        R_vert = -vert_dist / 50.0    # INCREASED weight for vertical progress
+        
+        # 2. Progress rewards (track improvement)
         R_progress = 0
         if len(self.trajectory) > 1:
-            prev_dist = np.sqrt((target_N - self.trajectory[-2]['N'])**2 + 
-                                (target_E - self.trajectory[-2]['E'])**2 + 
-                                (target_TVD - self.trajectory[-2]['TVD'])**2)
-            R_progress = (prev_dist - current_dist) * 2
+            prev_N = self.trajectory[-2]['N']
+            prev_E = self.trajectory[-2]['E']
+            prev_TVD = self.trajectory[-2]['TVD']
+            prev_horiz = np.sqrt((target_N - prev_N)**2 + (target_E - prev_E)**2)
+            prev_vert = abs(target_TVD - prev_TVD)
+            
+            horiz_improvement = prev_horiz - horiz_dist
+            vert_improvement = prev_vert - vert_dist
+            
+            # MUCH STRONGER vertical progress reward
+            R_progress = horiz_improvement * 50 + vert_improvement * 150  # Increased from 20 to 150
         
+        # 3. INCLINATION MANAGEMENT REWARDS
+        R_inclination = 0
+        
+        # Penalize high inclination when significant vertical distance remains
+        if vert_dist > 2000:
+            if self.current_I > 75:
+                R_inclination -= (self.current_I - 75) * 5  # Strong penalty
+            elif self.current_I > 60:
+                R_inclination -= (self.current_I - 60) * 2  # Moderate penalty
+        elif vert_dist > 500:
+            if self.current_I > 80:
+                R_inclination -= (self.current_I - 80) * 3
+        
+        # Reward appropriate inclination for remaining work
+        if vert_dist > 1000 and horiz_dist > 1000:
+            # Need both horizontal and vertical progress
+            ideal_inc = 45 + (horiz_dist / vert_dist) * 20
+            inc_error = abs(self.current_I - ideal_inc)
+            if inc_error < 10:
+                R_inclination += 5
+        
+        # 4. Quality rewards
         R_quality = 0
-        if DLS <= 3:
+        
+        # DLS penalty
+        if DLS <= 3.0:
+            R_quality += 10
+        elif DLS <= 5.0:
             R_quality += 5
-        elif DLS > 8:
+        elif DLS <= 8.0:
+            R_quality -= 5
+        else:
             R_quality -= 50
-        elif DLS > 5:
-            R_quality -= 20
         
-        # Strong penalty for going too deep
-        if self.current_TVD > target_TVD:
-            tvd_overshoot = self.current_TVD - target_TVD
-            R_quality -= tvd_overshoot / 10
+        # MD/TVD efficiency
+        if MD_TVD_ratio > 1.3:
+            R_quality -= (MD_TVD_ratio - 1.3) * 50
+        elif MD_TVD_ratio < 1.25:
+            R_quality += 3
         
-        # Azimuth error penalty - guide agent toward target direction
-        delta_N = target_N - self.current_N
-        delta_E = target_E - self.current_E
-        required_azimuth = np.degrees(np.arctan2(delta_E, delta_N)) % 360
-        azimuth_error = abs(self.current_A - required_azimuth)
-        if azimuth_error > 180:
-            azimuth_error = 360 - azimuth_error
+        # 5. Target approach bonuses
+        if vert_dist < 1000:
+            R_quality += (1000 - vert_dist) / 50  # Increased bonus
+        elif self.current_TVD > target_TVD + 500:
+            R_quality -= 20  # Increased penalty for overshoot
         
-        # Strong penalty for pointing away from target
-        R_quality -= azimuth_error / 10
+        # CRITICAL: Strong penalty for horizontal closeness but shallow depth
+        if horiz_dist < 500 and vert_dist > 3000:
+            R_quality -= 50  # Increased from 10
         
-        if len(self.trajectory) > 1:
-            dA = abs(self.trajectory[-1]['azimuth'] - self.trajectory[-2]['azimuth'])
-            if dA > 180:
-                dA = 360 - dA
-            if dA > 15:
-                R_quality -= 5
+        # Azimuth guidance (only when needed)
+        if horiz_dist > 200:
+            delta_N = target_N - self.current_N
+            delta_E = target_E - self.current_E
+            required_azimuth = np.degrees(np.arctan2(delta_E, delta_N)) % 360
+            azimuth_error = abs(self.current_A - required_azimuth)
+            if azimuth_error > 180:
+                azimuth_error = 360 - azimuth_error
+            R_quality -= min(azimuth_error / 100, 2)
         
+        # Wellbore stability
         props = self.reservoir.get_properties(self.current_N, self.current_E, self.current_TVD)
         stable, _ = self.physics.wellbore_stability(
             self.current_TVD, 12.5,
@@ -245,7 +320,7 @@ class WellPlanningEnv:
         if not stable:
             R_quality -= 10
         
-        R_total = R_progress + R_distance + R_quality
+        R_total = R_progress + R_horiz + R_vert + R_quality + R_inclination
         
         return R_total
     
